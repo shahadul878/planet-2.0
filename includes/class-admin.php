@@ -113,7 +113,7 @@ class Planet_Sync_Admin {
             $this->save_settings();
             echo '<div class="notice notice-success"><p>' . __('Settings saved.', 'planet-product-sync') . '</p></div>';
         }
-        $this->maybe_migrate_product_list();
+        
 
         $stats = $this->logger->get_sync_stats();
         $progress = $this->sync_engine->get_sync_progress();
@@ -290,54 +290,6 @@ class Planet_Sync_Admin {
         <?php
     }
     
-    /**
-     * Migrate product list from option to custom table (runs once automatically)
-     */
-    private function maybe_migrate_product_list() {
-        if (get_option('planet_product_snapshots_migrated') === 'yes') {
-            return;
-        }
-        
-        $products = get_option('produplanet_product_list', array());
-        
-        if (empty($products) || !is_array($products)) {
-            return;
-        }
-        
-        global $wpdb;
-        $table_name = $wpdb->prefix . 'planet_product_snapshots';
-        
-        foreach ($products as $product) {
-            $wpdb->insert(
-                $table_name,
-                array(
-                    'product_id'       => isset($product['id']) ? (int) $product['id'] : 0,
-                    'name'             => $product['name'] ?? '',
-                    'slug'             => $product['slug'] ?? '',
-                    'description'      => $product['desc'] ?? '',
-                    'release_date'     => !empty($product['release_date']) ? $product['release_date'] : null,
-                    'parents'          => !empty($product['parents']) ? wp_json_encode($product['parents']) : null,
-                    'first_categories' => !empty($product['1st_categories']) ? wp_json_encode($product['1st_categories']) : null,
-                    'snapshot_data'    => wp_json_encode($product),
-                    'created_at'       => current_time('mysql'),
-                    'updated_at'       => current_time('mysql'),
-                ),
-                array(
-                    '%d',
-                    '%s',
-                    '%s',
-                    '%s',
-                    '%s',
-                    '%s',
-                    '%s',
-                    '%s',
-                    '%s',
-                )
-            );
-        }
-        
-        update_option('planet_product_snapshots_migrated', 'yes');
-    }
     
     /**
      * Render sync logs

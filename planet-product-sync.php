@@ -47,7 +47,6 @@ function planet_sync_load_classes() {
     require_once PLANET_SYNC_PLUGIN_DIR . 'includes/class-database.php';
     require_once PLANET_SYNC_PLUGIN_DIR . 'includes/class-logger.php';
     require_once PLANET_SYNC_PLUGIN_DIR . 'includes/class-api.php';
-    require_once PLANET_SYNC_PLUGIN_DIR . 'includes/class-product-snapshot.php';
     require_once PLANET_SYNC_PLUGIN_DIR . 'includes/class-sync-queue.php';
     require_once PLANET_SYNC_PLUGIN_DIR . 'includes/class-sync-engine.php';
     require_once PLANET_SYNC_PLUGIN_DIR . 'includes/class-admin.php';

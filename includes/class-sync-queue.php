@@ -92,7 +92,7 @@ class Planet_Sync_Queue {
             if (empty($slug)) {
                 continue;
             }
-            $product_cat = isset($product_item['1st_categories'] ) ? wp_json_encode($product_item['1st_categories']) : '';
+            $product_cat = isset($product_item['1st_categories'] ) ? $product_item['1st_categories'][0]['slug'] : '';
             $product_id = isset($product_item['id']) ? $product_item['id'] : '';
             
             $result = $wpdb->insert(

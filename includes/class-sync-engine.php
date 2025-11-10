@@ -13,13 +13,11 @@ class Planet_Sync_Engine {
     private $api;
     private $logger;
     private $queue;
-    private $snapshot;
     
     public function __construct() {
         $this->api = new Planet_Sync_API();
         $this->logger = new Planet_Sync_Logger();
         $this->queue = new Planet_Sync_Queue();
-        $this->snapshot = new Planet_Sync_Product_Snapshot();
     }
     
     /**
@@ -365,11 +363,7 @@ class Planet_Sync_Engine {
                 'statistics' => $stats
             );
         }
-        
-        // Store snapshot before processing
-        $first_category_snapshot = $this->extract_first_level_category_snapshot($full_product);
-        $this->snapshot->upsert($full_product, $first_category_snapshot);
-
+          
         // Process the product
         $result = $this->process_single_product($slug, $full_product);
         
@@ -658,15 +652,62 @@ class Planet_Sync_Engine {
      * @param array $product_data Product data
      */
     private function sync_product_categories($product_id, $product_data) {
+        global $wpdb;
+
         $woo_term_ids = array();
+        $category_slugs = array();
+
         
-        // Check if product has category_ids from Planet API
-        if (isset($product_data['category_ids']) && is_array($product_data['category_ids'])) {
+
+        // Fallback to queue table slugs when API payload lacks them
+        if (empty($category_slugs)) {
+            $slug_for_lookup = isset($product_data['slug']) ? $product_data['slug'] : '';
+
+            if (empty($slug_for_lookup) && !empty($product_data['id'])) {
+                $slug_for_lookup = $wpdb->get_var(
+                    $wpdb->prepare(
+                        "SELECT product_slug FROM {$wpdb->prefix}planet_sync_queue WHERE product_id = %s ORDER BY id DESC LIMIT 1",
+                        $product_data['id']
+                    )
+                );
+            }
+
+            if (!empty($slug_for_lookup)) {
+                $queue_slugs = $wpdb->get_col(
+                    $wpdb->prepare(
+                        "SELECT product_cat FROM {$wpdb->prefix}planet_sync_queue WHERE product_slug = %s AND product_cat <> '' ORDER BY id DESC",
+                        $slug_for_lookup
+                    )
+                );
+
+                if (!empty($queue_slugs)) {
+                    foreach ($queue_slugs as $queue_slug) {
+                        $category_slugs[] = sanitize_title($queue_slug);
+                    }
+                }
+            }
+        }
+
+        if (!empty($category_slugs)) {
+            foreach ($category_slugs as $slug) {
+                $term = get_term_by('slug', $slug, 'product_cat');
+
+                if ($term instanceof WP_Term) {
+                    $woo_term_ids[] = (int) $term->term_id;
+                    $this->logger->log('product', 'info', $product_id,
+                        'Assigned to category (slug): ' . $slug);
+                } else {
+                    $this->logger->log('product', 'warning', $product_id,
+                        'Category slug not found in WooCommerce: ' . $slug);
+                }
+            }
+        }
+
+        // Additional fallback to Planet category IDs if term slugs could not be resolved
+        if (empty($woo_term_ids) && isset($product_data['category_ids']) && is_array($product_data['category_ids'])) {
             $planet_category_ids = $product_data['category_ids'];
-            
-            // Map Planet category IDs to WooCommerce term IDs
+
             foreach ($planet_category_ids as $planet_id) {
-                // Find WooCommerce term by Planet ID meta
                 $terms = get_terms(array(
                     'taxonomy' => 'product_cat',
                     'hide_empty' => false,
@@ -678,30 +719,29 @@ class Planet_Sync_Engine {
                         )
                     )
                 ));
-                
+
                 if (!empty($terms) && !is_wp_error($terms)) {
-                    $woo_term_ids[] = $terms[0]->term_id;
-                    
-                    // Log category assignment
-                    $this->logger->log('product', 'info', $product_id, 
+                    $woo_term_ids[] = (int) $terms[0]->term_id;
+                    $this->logger->log('product', 'info', $product_id,
                         'Assigned to category: ' . $terms[0]->name . ' (Planet ID: ' . $planet_id . ')');
                 }
             }
         }
-        
-        // Assign categories to product
+
+        $woo_term_ids = array_values(array_unique(array_filter($woo_term_ids)));
+
         if (!empty($woo_term_ids)) {
             $result = wp_set_object_terms($product_id, $woo_term_ids, 'product_cat');
-            
+
             if (is_wp_error($result)) {
-                $this->logger->log('product', 'error', $product_id, 
+                $this->logger->log('product', 'error', $product_id,
                     'Failed to assign categories: ' . $result->get_error_message());
             } else {
-                $this->logger->log('product', 'info', $product_id, 
+                $this->logger->log('product', 'info', $product_id,
                     'Successfully assigned ' . count($woo_term_ids) . ' categories');
             }
         } else {
-            $this->logger->log('product', 'info', $product_id, 
+            $this->logger->log('product', 'info', $product_id,
                 'No categories found to assign');
         }
     }
@@ -726,19 +766,6 @@ class Planet_Sync_Engine {
         return array_values(array_unique($category_ids));
     }
     
-    /**
-     * Extract first level category snapshot data
-     *
-     * @param array $product_data
-     * @return array|null
-     */
-    private function extract_first_level_category_snapshot($product_data) {
-        if (!empty($product_data['1st_categories']) && is_array($product_data['1st_categories'])) {
-            return $product_data['1st_categories'][0];
-        }
-        
-        return null;
-    }
     
     /**
      * Sync product images
