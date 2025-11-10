@@ -497,11 +497,11 @@ class Planet_Sync_Engine {
      */
     private function create_woo_product($product_data, $hash) {
         $product = new WC_Product_Simple();
-        
+        $overview = $this->download_and_replace_images_in_html($product_data['overview'], 0);
         // Set basic data using Planet API field names
         $product->set_name($product_data['desc'] ?? 'Untitled Product');  // 'desc' = Product Title
         $product->set_slug($product_data['slug'] ?? '');
-        $product->set_description($product_data['overview'] ?? '');  // 'overview' = Product Description
+        $product->set_description($overview ?? '');  // 'overview' = Product Description
 
         
 //        // Set price (if provided by API)
@@ -546,9 +546,9 @@ class Planet_Sync_Engine {
         update_post_meta($product_id, '_planet_slug', $product_data['slug'] ?? '');
         
         // Store category IDs for reference
-        if (isset($product_data['category_ids'])) {
-            update_post_meta($product_id, '_planet_category_ids', json_encode($product_data['category_ids']));
-        }
+        // if (isset($product_data['category_ids'])) {
+        //     update_post_meta($product_id, '_planet_category_ids', json_encode($product_data['category_ids']));
+        // }
 
 	    // Update additional custom fields
 	    if (isset($product_data['applications'])) {
@@ -581,9 +581,10 @@ class Planet_Sync_Engine {
             return;
         }
         
+        $overview = $this->download_and_replace_images_in_html($product_data['overview'], $product_id);
         // Update basic data using Planet API field names
         $product->set_name($product_data['desc'] ?? 'Untitled Product');  // 'desc' = Product Title
-        $product->set_description($product_data['overview'] ?? '');  // 'overview' = Product Description
+        $product->set_description($overview?? '');  // 'overview' = Product Description
         
         // Update price (if provided by API)
 //        if (isset($product_data['price'])) {
@@ -606,12 +607,12 @@ class Planet_Sync_Engine {
         
         // Save product
         $product->save();
-        // Normalize first-level category IDs before syncing
-        $product_data['category_ids'] = $this->extract_first_level_category_ids($product_data);
+        // // Normalize first-level category IDs before syncing
+        // $product_data['category_ids'] = $this->extract_first_level_category_ids($product_data);
         
-        // Update categories
-        // Normalize first-level category IDs before syncing
-        $product_data['category_ids'] = $this->extract_first_level_category_ids($product_data);
+        // // Update categories
+        // // Normalize first-level category IDs before syncing
+        // $product_data['category_ids'] = $this->extract_first_level_category_ids($product_data);
         
         // Update categories
         $this->sync_product_categories($product_id, $product_data);
@@ -625,10 +626,10 @@ class Planet_Sync_Engine {
         update_post_meta($product_id, 'product_code', $product_data['name'] ?? '');
         update_post_meta($product_id, '_planet_slug', $product_data['slug'] ?? '');
         
-        // Update category IDs for reference
-        if (isset($product_data['category_ids'])) {
-            update_post_meta($product_id, '_planet_category_ids', json_encode($product_data['category_ids']));
-        }
+        // // Update category IDs for reference
+        // if (isset($product_data['category_ids'])) {
+        //     update_post_meta($product_id, '_planet_category_ids', json_encode($product_data['category_ids']));
+        // }
 
 	    // Update additional custom fields
 	    if (isset($product_data['applications'])) {
