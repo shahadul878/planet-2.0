@@ -72,6 +72,7 @@ function planet_sync_activate() {
     add_option('planet_sync_api_key', '6cbdd98d66a8d0d4d171ce12a75b4c90104214f7b116d5862b8f8e4d9b6ef663');
     add_option('planet_sync_auto_sync', 'no');
     add_option('planet_sync_frequency', 'hourly');
+    add_option('planet_sync_daily_time', '02:00');
     add_option('planet_sync_debug_mode', 'no');
 }
 register_activation_hook(__FILE__, 'planet_sync_activate');
@@ -79,15 +80,7 @@ register_activation_hook(__FILE__, 'planet_sync_activate');
 // Plugin deactivation
 function planet_sync_deactivate() {
     // Clear scheduled events
-    $timestamp = wp_next_scheduled('planet_auto_sync');
-    if ($timestamp) {
-        wp_unschedule_event($timestamp, 'planet_auto_sync');
-    }
-    
-    // Clear Action Scheduler if exists
-    if (function_exists('as_unschedule_all_actions')) {
-        as_unschedule_all_actions('planet_auto_sync');
-    }
+    planet_sync_clear_cron_schedule();
     
     // Clear any temp data
     delete_option('planet_temp_product_list');
@@ -118,20 +111,97 @@ function planet_sync_init() {
 }
 add_action('plugins_loaded', 'planet_sync_init');
 
+// Calculate next daily timestamp using site timezone
+function planet_sync_get_next_daily_timestamp($time_string) {
+    if (!preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $time_string)) {
+        $time_string = '02:00';
+    }
+
+    list($hour, $minute) = array_map('intval', explode(':', $time_string));
+
+    if (function_exists('wp_timezone')) {
+        $timezone = wp_timezone();
+    } else {
+        $timezone_string = get_option('timezone_string');
+        if (empty($timezone_string)) {
+            $timezone_string = 'UTC';
+        }
+        $timezone = new DateTimeZone($timezone_string);
+    }
+    $now      = new DateTime('now', $timezone);
+    $target   = clone $now;
+    $target->setTime($hour, $minute, 0);
+
+    if ($target <= $now) {
+        $target->modify('+1 day');
+    }
+
+    return $target->getTimestamp();
+}
+
+// Remove any scheduled sync events
+function planet_sync_clear_cron_schedule() {
+    while ($timestamp = wp_next_scheduled('planet_auto_sync')) {
+        wp_unschedule_event($timestamp, 'planet_auto_sync');
+    }
+
+    if (function_exists('as_unschedule_all_actions')) {
+        as_unschedule_all_actions('planet_auto_sync');
+    }
+}
+
 // Setup automatic sync
-function planet_sync_setup_cron() {
-    $frequency = get_option('planet_sync_frequency', 'hourly');
-    
-    // Use Action Scheduler if available (better for large datasets)
+function planet_sync_setup_cron($force = false) {
+    $auto_sync = get_option('planet_sync_auto_sync', 'no');
+
+    if ($auto_sync !== 'yes') {
+        if ($force) {
+            planet_sync_clear_cron_schedule();
+        }
+        return;
+    }
+
+    $frequency   = get_option('planet_sync_frequency', 'hourly');
+    $daily_time  = get_option('planet_sync_daily_time', '02:00');
+    $interval    = ($frequency === 'daily') ? DAY_IN_SECONDS : HOUR_IN_SECONDS;
+    $start_time  = ($frequency === 'daily')
+        ? planet_sync_get_next_daily_timestamp($daily_time)
+        : time() + HOUR_IN_SECONDS;
+
     if (function_exists('as_next_scheduled_action')) {
-        if (!as_next_scheduled_action('planet_auto_sync')) {
-            $interval = ($frequency === 'daily') ? DAY_IN_SECONDS : HOUR_IN_SECONDS;
-            as_schedule_recurring_action(time(), $interval, 'planet_auto_sync');
+        $next = as_next_scheduled_action('planet_auto_sync');
+
+        if ($force) {
+            as_unschedule_all_actions('planet_auto_sync');
+            $next = false;
+        } elseif ($frequency === 'daily' && $next) {
+            $expected = planet_sync_get_next_daily_timestamp($daily_time);
+            if (abs($next - $expected) > 120) {
+                as_unschedule_all_actions('planet_auto_sync');
+                $next = false;
+            }
+        }
+
+        if (!$next) {
+            as_schedule_recurring_action($start_time, $interval, 'planet_auto_sync');
         }
     } else {
-        // Fallback to WP-Cron
-        if (!wp_next_scheduled('planet_auto_sync')) {
-            wp_schedule_event(time(), $frequency, 'planet_auto_sync');
+        $next = wp_next_scheduled('planet_auto_sync');
+
+        if ($force) {
+            planet_sync_clear_cron_schedule();
+            $next = false;
+        } elseif ($frequency === 'daily' && $next) {
+            $expected = planet_sync_get_next_daily_timestamp($daily_time);
+            if (abs($next - $expected) > 120) {
+                planet_sync_clear_cron_schedule();
+                $next = false;
+            }
+        }
+
+        if (!$next) {
+            $recurrence = ($frequency === 'daily') ? 'daily' : 'hourly';
+            wp_schedule_event($start_time, $recurrence, 'planet_auto_sync');
         }
     }
 }

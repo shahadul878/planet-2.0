@@ -62,6 +62,7 @@ class Planet_Sync_Admin {
         register_setting('planet_sync_settings', 'planet_sync_api_key');
         register_setting('planet_sync_settings', 'planet_sync_auto_sync');
         register_setting('planet_sync_settings', 'planet_sync_frequency');
+        register_setting('planet_sync_settings', 'planet_sync_daily_time');
         register_setting('planet_sync_settings', 'planet_sync_debug_mode');
     }
     
@@ -130,7 +131,7 @@ class Planet_Sync_Admin {
                     <div class="planet-stats-grid">
                         <div class="stat-box">
                             <div class="stat-label"><?php _e('Last Sync', 'planet-product-sync'); ?></div>
-                            <div class="stat-value"><?php echo esc_html($stats['last_sync_formatted']); ?></div>
+                            <div class="stat-value date-time"><?php echo esc_html($stats['last_sync_formatted']); ?></div>
                         </div>
                         <div class="stat-box">
                             <div class="stat-label"><?php _e('Products Created', 'planet-product-sync'); ?></div>
@@ -257,6 +258,21 @@ class Planet_Sync_Admin {
                                             <?php _e('Daily', 'planet-product-sync'); ?>
                                         </option>
                                     </select>
+                                </td>
+                            </tr>
+                            
+                            <tr>
+                                <th scope="row">
+                                    <label for="planet_sync_daily_time"><?php _e('Daily Sync Time', 'planet-product-sync'); ?></label>
+                                </th>
+                                <td>
+                                    <input type="time"
+                                           id="planet_sync_daily_time"
+                                           name="planet_sync_daily_time"
+                                           value="<?php echo esc_attr(get_option('planet_sync_daily_time', '02:00')); ?>">
+                                    <p class="description">
+                                        <?php _e('Choose the local time for the daily sync to start.', 'planet-product-sync'); ?>
+                                    </p>
                                 </td>
                             </tr>
                             
@@ -452,8 +468,32 @@ class Planet_Sync_Admin {
         if (isset($_POST['planet_sync_frequency'])) {
             update_option('planet_sync_frequency', sanitize_text_field($_POST['planet_sync_frequency']));
         }
+
+        if (isset($_POST['planet_sync_daily_time'])) {
+            update_option('planet_sync_daily_time', $this->sanitize_time_value($_POST['planet_sync_daily_time']));
+        }
         
         update_option('planet_sync_debug_mode', isset($_POST['planet_sync_debug_mode']) ? 'yes' : 'no');
+
+        if (function_exists('planet_sync_setup_cron')) {
+            planet_sync_setup_cron(true);
+        }
+    }
+
+    /**
+     * Sanitize a HH:MM formatted time string
+     *
+     * @param string $value
+     * @return string
+     */
+    private function sanitize_time_value($value) {
+        $value = trim((string) $value);
+
+        if (preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $value)) {
+            return $value;
+        }
+
+        return '02:00';
     }
     
     /**

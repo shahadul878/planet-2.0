@@ -48,7 +48,7 @@ class Planet_Sync_Logger {
      * @param string $action Filter by action (optional)
      * @return array
      */
-    public function get_recent_logs($limit = 100, $type = null, $action = null) {
+    public function get_recent_logs($limit = 600, $type = null, $action = null) {
         global $wpdb;
         $table_name = $wpdb->prefix . 'planet_sync_log';
         
@@ -214,7 +214,7 @@ class Planet_Sync_Logger {
      * @param int $limit Number of errors to retrieve
      * @return array
      */
-    public function get_errors($limit = 50) {
+    public function get_errors($limit = 600) {
         return $this->get_recent_logs($limit, null, 'error');
     }
     
@@ -225,7 +225,7 @@ class Planet_Sync_Logger {
      * @param int $limit Number of results
      * @return array
      */
-    public function search_logs($search_term, $limit = 100) {
+    public function search_logs($search_term, $limit = 600) {
         global $wpdb;
         $table_name = $wpdb->prefix . 'planet_sync_log';
         

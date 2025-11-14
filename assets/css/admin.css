@@ -56,6 +56,11 @@
     color: #333;
 }
 
+.stat-value.date-time {
+    font-size: 14px;
+    color: #666;
+}
+
 .stat-value.stat-success {
     color: #46b450;
 }

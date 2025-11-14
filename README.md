@@ -109,6 +109,7 @@ Advanced product synchronization plugin for WooCommerce that syncs products from
 - `planet_sync_api_key` - API authentication key
 - `planet_sync_auto_sync` - Auto-sync enabled/disabled
 - `planet_sync_frequency` - Sync frequency setting
+- `planet_sync_daily_time` - Preferred start time for daily sync (HH:MM)
 - `planet_sync_debug_mode` - Debug mode enabled/disabled
 - `planet_temp_product_list` - Temporary product list during sync
 - `planet_sync_progress` - Current sync progress
@@ -140,7 +141,7 @@ Advanced product synchronization plugin for WooCommerce that syncs products from
 
 ### Automatic Sync
 1. Enable **Auto Sync** in settings
-2. Choose sync frequency (hourly/daily)
+2. Choose sync frequency (hourly/daily) and set the daily start time
 3. Save settings
 4. Plugin will automatically sync on schedule
 
