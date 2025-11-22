@@ -159,6 +159,9 @@ class Planet_Sync_Engine {
     public function fetch_product_list() {
         $this->logger->log('product', 'info', '', 'Fetching product list from API');
         
+        // Set transient to indicate sync is in progress
+        set_transient('planet_sync_in_progress', true, 3600); // 1 hour expiry
+        
         // Fetch product list
         $products = $this->api->get_product_list();
         
@@ -288,6 +291,9 @@ class Planet_Sync_Engine {
         delete_option('planet_temp_sync_started');
         delete_option('planet_sync_progress');
         
+        // Clear sync in progress transient
+        delete_transient('planet_sync_in_progress');
+        
         $this->logger->log('product', 'info', '', sprintf(
             'Processing complete: %d created, %d updated, %d skipped, %d errors',
             $created, $updated, $skipped, $errors
@@ -322,6 +328,9 @@ class Planet_Sync_Engine {
             if ($batch_id) {
                 $this->queue->cleanup_batch($batch_id);
             }
+            
+            // Clear sync in progress transient
+            delete_transient('planet_sync_in_progress');
             
             $this->logger->log('product', 'info', '', sprintf(
                 'Sync complete: %d synced, %d failed, %d skipped',

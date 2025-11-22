@@ -111,6 +111,77 @@ function planet_sync_init() {
 }
 add_action('plugins_loaded', 'planet_sync_init');
 
+/**
+ * Remove product from "New Products" table when manually edited
+ * This hook fires when a product is saved/updated manually
+ */
+function planet_sync_remove_from_new_products_on_edit($post_id, $post, $update) {
+    // Only process product post type
+    if ($post->post_type !== 'product') {
+        return;
+    }
+    
+    // Skip if this is a new post (not an update)
+    if (!$update) {
+        return;
+    }
+    
+    // Skip if sync is in progress (to avoid removing during sync)
+    if (get_transient('planet_sync_in_progress')) {
+        return;
+    }
+    
+    // Skip autosaves and revisions
+    if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
+        return;
+    }
+    
+    if (wp_is_post_revision($post_id)) {
+        return;
+    }
+    
+    // Get product identifier
+    $product = wc_get_product($post_id);
+    if (!$product) {
+        return;
+    }
+    
+    // Try to get Planet slug from meta, otherwise use product slug
+    $planet_slug = get_post_meta($post_id, '_planet_slug', true);
+    $product_slug = $product->get_slug();
+    $identifier = !empty($planet_slug) ? $planet_slug : $product_slug;
+    
+    if (empty($identifier)) {
+        // Fallback to product ID
+        $identifier = (string) $post_id;
+    }
+    
+    // Delete 'create' log entries for this product
+    global $wpdb;
+    $log_table = $wpdb->prefix . 'planet_sync_log';
+    
+    // Delete by identifier (slug)
+    $deleted = $wpdb->query($wpdb->prepare(
+        "DELETE FROM {$log_table} 
+        WHERE type = 'product' 
+        AND action = 'create' 
+        AND slug_or_id = %s",
+        $identifier
+    ));
+    
+    // Also try with product ID as fallback
+    if ($deleted === 0 && !is_numeric($identifier)) {
+        $wpdb->query($wpdb->prepare(
+            "DELETE FROM {$log_table} 
+            WHERE type = 'product' 
+            AND action = 'create' 
+            AND slug_or_id = %d",
+            $post_id
+        ));
+    }
+}
+add_action('save_post_product', 'planet_sync_remove_from_new_products_on_edit', 10, 3);
+
 // Calculate next daily timestamp using site timezone
 function planet_sync_get_next_daily_timestamp($time_string) {
     if (!preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $time_string)) {
@@ -253,6 +324,7 @@ function planet_sync_all() {
         delete_option('planet_temp_product_list');
         delete_option('planet_temp_sync_started');
         delete_option('planet_sync_progress');
+        delete_transient('planet_sync_in_progress');
         
         return array(
             'success' => false,

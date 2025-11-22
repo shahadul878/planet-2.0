@@ -350,7 +350,7 @@ class Planet_Sync_Admin {
      * Render table of newly created products
      */
     private function render_new_products_table() {
-        $new_products = $this->logger->get_recent_logs(20, 'product', 'create');
+        $new_products = $this->logger->get_recent_logs(600, 'product', 'create');
         
         if (empty($new_products)) {
             echo '<p>' . esc_html__('No new products synced yet.', 'planet-product-sync') . '</p>';
