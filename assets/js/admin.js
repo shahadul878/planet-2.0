@@ -62,16 +62,87 @@
         
         // Check if sync is running on page load
         checkSyncStatus();
+        
+        // Background sync controls
+        $('#pause-background-sync-btn').on('click', function(e) {
+            e.preventDefault();
+            pauseBackgroundSync();
+        });
+        
+        $('#resume-background-sync-btn').on('click', function(e) {
+            e.preventDefault();
+            resumeBackgroundSync();
+        });
+        
+        $('#cancel-background-sync-btn').on('click', function(e) {
+            e.preventDefault();
+            if (!confirm('Are you sure you want to cancel the background sync?')) {
+                return;
+            }
+            cancelBackgroundSync();
+        });
+        
+        $('#trigger-background-sync-btn').on('click', function(e) {
+            e.preventDefault();
+            triggerBackgroundSync();
+        });
+        
+        // Always visible manual trigger button
+        $('#trigger-background-sync-btn-always').on('click', function(e) {
+            e.preventDefault();
+            triggerBackgroundSync();
+        });
+        
+        $('#get-background-debug-btn').on('click', function(e) {
+            e.preventDefault();
+            getBackgroundDebug();
+        });
+        
+        // Check background sync status periodically if background method is selected
+        const syncMethod = $('#planet_sync_method').length ? $('#planet_sync_method').val() : (planetSync.syncMethod || 'ajax');
+        let backgroundSyncInterval = null;
+        
+        if (syncMethod === 'background') {
+            // Check immediately on page load
+            checkBackgroundSyncStatus();
+            
+            // Set up interval to check every 5 seconds
+            backgroundSyncInterval = setInterval(function() {
+                checkBackgroundSyncStatus();
+            }, 5000);
+            
+            // Store interval ID so we can clear it if needed
+            window.planetSyncBackgroundInterval = backgroundSyncInterval;
+            
+            // Add visual indicator that auto-refresh is active
+            addAutoRefreshIndicator();
+        }
     });
     
     /**
-     * Start full sync (with real-time one-by-one processing)
+     * Start full sync (AJAX or Background based on settings)
      */
     function startSync() {
         const $btn = $('#start-sync-btn');
+        const syncMethod = $('#planet_sync_method').length ? $('#planet_sync_method').val() : (planetSync.syncMethod || 'ajax');
         
         // Disable button and show loading
         $btn.prop('disabled', true).addClass('loading').text('Initializing...');
+        
+        if (syncMethod === 'background') {
+            // Use background sync
+            startBackgroundSync();
+        } else {
+            // Use AJAX sync (existing method)
+            startAjaxSync();
+        }
+    }
+    
+    /**
+     * Start AJAX sync (real-time one-by-one processing)
+     */
+    function startAjaxSync() {
+        const $btn = $('#start-sync-btn');
         
         // Initialize sync (Step 1 & 2: Validate categories + Fetch product list)
         $.ajax({
@@ -96,6 +167,284 @@
             error: function(xhr, status, error) {
                 showNotice('error', 'AJAX error: ' + error);
                 $btn.prop('disabled', false).removeClass('loading').text('Start Full Sync');
+            }
+        });
+    }
+    
+    /**
+     * Start background sync
+     */
+    function startBackgroundSync() {
+        const $btn = $('#start-sync-btn');
+        
+        $.ajax({
+            url: planetSync.ajaxUrl,
+            method: 'POST',
+            data: {
+                action: 'planet_start_background_sync',
+                nonce: planetSync.nonce
+            },
+            success: function(response) {
+                if (response.success) {
+                    showNotice('success', response.data.message || 'Background sync started successfully');
+                    $btn.prop('disabled', false).removeClass('loading').text('Start Full Sync');
+                    // Reload page after a moment to show updated status
+                    setTimeout(function() {
+                        location.reload();
+                    }, 2000);
+                } else {
+                    showNotice('error', response.data.message || 'Background sync failed to start');
+                    $btn.prop('disabled', false).removeClass('loading').text('Start Full Sync');
+                }
+            },
+            error: function(xhr, status, error) {
+                showNotice('error', 'AJAX error: ' + error);
+                $btn.prop('disabled', false).removeClass('loading').text('Start Full Sync');
+            }
+        });
+    }
+    
+    /**
+     * Check background sync status
+     */
+    function checkBackgroundSyncStatus() {
+        $.ajax({
+            url: planetSync.ajaxUrl,
+            method: 'POST',
+            data: {
+                action: 'planet_get_background_status',
+                nonce: planetSync.nonce
+            },
+            success: function(response) {
+                if (response.success) {
+                    const status = response.data.status;
+                    const progress = response.data.progress;
+                    
+                    // Update UI based on status
+                    if (status.is_running || status.is_queued || status.is_processing) {
+                        // Sync is active - update progress display
+                        if (progress) {
+                            // Update progress display with current statistics
+                            updateProgressDisplay({
+                                is_running: true,
+                                stage: progress.stage || 'processing',
+                                current: progress.current || 0,
+                                total: progress.total || 0,
+                                percentage: progress.percentage || 0,
+                                synced: progress.synced || 0,
+                                skipped: progress.skipped || 0,
+                                failed: progress.failed || 0,
+                                pending: progress.pending || 0
+                            });
+                        }
+                    } else if (status.is_paused) {
+                        // Sync is paused - show paused status
+                        if (progress) {
+                            updateProgressDisplay({
+                                is_running: false,
+                                stage: 'paused',
+                                current: progress.current || 0,
+                                total: progress.total || 0,
+                                percentage: progress.percentage || 0,
+                                synced: progress.synced || 0,
+                                skipped: progress.skipped || 0,
+                                failed: progress.failed || 0,
+                                pending: progress.pending || 0
+                            });
+                        }
+                    } else {
+                        // Sync completed or not running
+                        if (progress && progress.total > 0 && progress.pending === 0) {
+                            // Sync completed - update final progress and reload after a moment
+                            updateProgressDisplay({
+                                is_running: false,
+                                stage: 'complete',
+                                current: progress.total,
+                                total: progress.total,
+                                percentage: 100,
+                                synced: progress.synced || 0,
+                                skipped: progress.skipped || 0,
+                                failed: progress.failed || 0,
+                                pending: 0
+                            });
+                            
+                            // Clear the interval since sync is complete
+                            if (window.planetSyncBackgroundInterval) {
+                                clearInterval(window.planetSyncBackgroundInterval);
+                                window.planetSyncBackgroundInterval = null;
+                            }
+                            
+                            // Remove auto-refresh indicator
+                            removeAutoRefreshIndicator();
+                            
+                            // Reload page after 3 seconds to show final results
+                            setTimeout(function() {
+                                location.reload();
+                            }, 3000);
+                        } else if (!status.is_active && progress && progress.total === 0) {
+                            // No sync in progress - clear progress display
+                            $('.sync-progress-container').fadeOut();
+                            
+                            // Clear the interval if no sync is active
+                            if (window.planetSyncBackgroundInterval) {
+                                clearInterval(window.planetSyncBackgroundInterval);
+                                window.planetSyncBackgroundInterval = null;
+                            }
+                            
+                            // Remove auto-refresh indicator
+                            removeAutoRefreshIndicator();
+                        }
+                    }
+                }
+            },
+            error: function(xhr, status, error) {
+                // Silently fail - don't show errors for background status checks
+                console.error('Background sync status check failed:', error);
+            }
+        });
+    }
+    
+    /**
+     * Pause background sync
+     */
+    function pauseBackgroundSync() {
+        $.ajax({
+            url: planetSync.ajaxUrl,
+            method: 'POST',
+            data: {
+                action: 'planet_pause_background_sync',
+                nonce: planetSync.nonce
+            },
+            success: function(response) {
+                if (response.success) {
+                    showNotice('success', response.data.message || 'Background sync paused');
+                    location.reload();
+                } else {
+                    showNotice('error', response.data.message || 'Failed to pause background sync');
+                }
+            }
+        });
+    }
+    
+    /**
+     * Resume background sync
+     */
+    function resumeBackgroundSync() {
+        $.ajax({
+            url: planetSync.ajaxUrl,
+            method: 'POST',
+            data: {
+                action: 'planet_resume_background_sync',
+                nonce: planetSync.nonce
+            },
+            success: function(response) {
+                if (response.success) {
+                    showNotice('success', response.data.message || 'Background sync resumed');
+                    location.reload();
+                } else {
+                    showNotice('error', response.data.message || 'Failed to resume background sync');
+                }
+            }
+        });
+    }
+    
+    /**
+     * Cancel background sync
+     */
+    function cancelBackgroundSync() {
+        $.ajax({
+            url: planetSync.ajaxUrl,
+            method: 'POST',
+            data: {
+                action: 'planet_cancel_background_sync',
+                nonce: planetSync.nonce
+            },
+            success: function(response) {
+                if (response.success) {
+                    showNotice('success', response.data.message || 'Background sync cancelled');
+                    location.reload();
+                } else {
+                    showNotice('error', response.data.message || 'Failed to cancel background sync');
+                }
+            }
+        });
+    }
+    
+    /**
+     * Manually trigger background sync processing
+     */
+    function triggerBackgroundSync() {
+        const $btn = $('#trigger-background-sync-btn, #trigger-background-sync-btn-always');
+        const originalText = $btn.first().text();
+        
+        $btn.prop('disabled', true).addClass('loading');
+        $btn.text('Triggering...');
+        
+        $.ajax({
+            url: planetSync.ajaxUrl,
+            method: 'POST',
+            data: {
+                action: 'planet_trigger_background_sync',
+                nonce: planetSync.nonce
+            },
+            success: function(response) {
+                if (response.success) {
+                    showNotice('success', response.data.message || 'Background sync triggered successfully');
+                    $btn.text('Triggered!');
+                    
+                    // Reload page after 2 seconds to show updated status
+                    setTimeout(function() {
+                        location.reload();
+                    }, 2000);
+                } else {
+                    showNotice('error', response.data.message || 'Failed to trigger background sync');
+                    $btn.prop('disabled', false).removeClass('loading').text(originalText);
+                }
+            },
+            error: function(xhr, status, error) {
+                showNotice('error', 'AJAX error: ' + error);
+                $btn.prop('disabled', false).removeClass('loading').text(originalText);
+            }
+        });
+    }
+    
+    /**
+     * Get background sync debug information
+     */
+    function getBackgroundDebug() {
+        const $btn = $('#get-background-debug-btn');
+        $btn.prop('disabled', true).addClass('loading');
+        
+        $.ajax({
+            url: planetSync.ajaxUrl,
+            method: 'POST',
+            data: {
+                action: 'planet_get_background_debug',
+                nonce: planetSync.nonce
+            },
+            success: function(response) {
+                if (response.success) {
+                    const debug = response.data.debug;
+                    const status = response.data.status;
+                    let message = 'Debug Info:\n\n';
+                    message += 'Queue Items: ' + debug.total_items + '\n';
+                    message += 'Batches: ' + debug.batch_count + '\n';
+                    message += 'Is Queued: ' + (debug.is_queued ? 'Yes' : 'No') + '\n';
+                    message += 'Is Processing: ' + (debug.is_processing ? 'Yes' : 'No') + '\n';
+                    message += 'Is Paused: ' + (debug.is_paused ? 'Yes' : 'No') + '\n';
+                    message += 'Next Cron: ' + (debug.next_cron_formatted || 'Not scheduled') + '\n';
+                    message += 'Cron Disabled: ' + (debug.cron_disabled ? 'Yes' : 'No') + '\n';
+                    message += 'WC Background Process Loaded: ' + (response.data.wc_loaded ? 'Yes' : 'No') + '\n';
+                    
+                    alert(message);
+                } else {
+                    showNotice('error', response.data.message || 'Failed to get debug info');
+                }
+                $btn.prop('disabled', false).removeClass('loading');
+            },
+            error: function(xhr, status, error) {
+                showNotice('error', 'AJAX error: ' + error);
+                $btn.prop('disabled', false).removeClass('loading');
             }
         });
     }
@@ -579,6 +928,36 @@
                 showNotice('error', 'AJAX error: ' + error);
                 $btn.prop('disabled', false).removeClass('loading');
             }
+        });
+    }
+    
+    /**
+     * Add auto-refresh indicator
+     */
+    function addAutoRefreshIndicator() {
+        // Check if indicator already exists
+        if ($('.auto-refresh-indicator').length > 0) {
+            return;
+        }
+        
+        const $indicator = $('<div class="auto-refresh-indicator" style="position: fixed; bottom: 20px; right: 20px; background: #2271b1; color: white; padding: 10px 15px; border-radius: 4px; font-size: 12px; z-index: 10000; box-shadow: 0 2px 5px rgba(0,0,0,0.2);"><span class="refresh-icon" style="display: inline-block; margin-right: 5px;">⟳</span>Auto-refresh active</div>');
+        $('body').append($indicator);
+        
+        // Animate refresh icon
+        setInterval(function() {
+            $indicator.find('.refresh-icon').css('transform', 'rotate(360deg)');
+            setTimeout(function() {
+                $indicator.find('.refresh-icon').css('transform', 'rotate(0deg)');
+            }, 500);
+        }, 5000);
+    }
+    
+    /**
+     * Remove auto-refresh indicator
+     */
+    function removeAutoRefreshIndicator() {
+        $('.auto-refresh-indicator').fadeOut(function() {
+            $(this).remove();
         });
     }
     

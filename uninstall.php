@@ -30,7 +30,12 @@ $wpdb->query(
 
 // Drop database tables
 $log_table = $wpdb->prefix . 'planet_sync_log';
+$snapshot_table = $wpdb->prefix . 'planet_product_snapshots';
+$queue_table = $wpdb->prefix . 'planet_sync_queue';
+
 $wpdb->query("DROP TABLE IF EXISTS $log_table");
+$wpdb->query("DROP TABLE IF EXISTS $snapshot_table");
+$wpdb->query("DROP TABLE IF EXISTS $queue_table");
 
 // Remove post meta from products
 $wpdb->query(

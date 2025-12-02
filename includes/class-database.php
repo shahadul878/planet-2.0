@@ -34,28 +34,8 @@ class Planet_Sync_Database {
             KEY created_at (created_at)
         ) $charset_collate;";
         
-        // Product snapshot table
-        $product_table_name = $wpdb->prefix . 'planet_product_snapshots';
-        $product_sql = "CREATE TABLE IF NOT EXISTS $product_table_name (
-            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
-            product_id bigint(20) unsigned NOT NULL,
-            name varchar(255) NOT NULL,
-            slug varchar(255) NOT NULL,
-            description text NULL,
-            release_date datetime NULL,
-            parents text NULL,
-            first_categories text NULL,
-            snapshot_data longtext NULL,
-            created_at datetime DEFAULT CURRENT_TIMESTAMP,
-            updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            PRIMARY KEY  (id),
-            KEY product_id (product_id),
-            KEY slug (slug)
-        ) $charset_collate;";
-        
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
         dbDelta($log_sql);
-        dbDelta($product_sql);
     }
     
     /**
@@ -65,10 +45,8 @@ class Planet_Sync_Database {
         global $wpdb;
         
         $log_table_name = $wpdb->prefix . 'planet_sync_log';
-        $product_table_name = $wpdb->prefix . 'planet_product_snapshots';
         
         $wpdb->query("DROP TABLE IF EXISTS $log_table_name");
-        $wpdb->query("DROP TABLE IF EXISTS $product_table_name");
     }
     
     /**

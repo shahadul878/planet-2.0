@@ -10,9 +10,9 @@ if (!defined('ABSPATH')) {
 
 class Planet_Sync_Engine {
     
-    private $api;
+    public $api;
     private $logger;
-    private $queue;
+    public $queue;
     
     public function __construct() {
         $this->api = new Planet_Sync_API();
@@ -187,6 +187,9 @@ class Planet_Sync_Engine {
 		update_option('planet_product_list', $products);
         update_option('planet_temp_sync_started', time(), false);
         
+        // Handle orphaned products (local products not in remote)
+        $orphaned_result = $this->handle_orphaned_products($products);
+        
         // Initialize progress with queue statistics
         $stats = $this->queue->get_statistics($queue_result['batch_id']);
         update_option('planet_sync_progress', array(
@@ -202,11 +205,135 @@ class Planet_Sync_Engine {
         
         $this->logger->log('product', 'info', '', sprintf('Initialized sync queue with %d products (Batch: %s)', $stats['total'], $queue_result['batch_id']));
         
+        if ($orphaned_result['found'] > 0) {
+            $this->logger->log('product', 'info', '', sprintf('Orphaned products: %d found, %d processed (%s)', 
+                $orphaned_result['found'], $orphaned_result['processed'], $orphaned_result['action']));
+        }
+        
         return array(
             'success' => true,
             'total' => $stats['total'],
             'batch_id' => $queue_result['batch_id'],
-            'message' => sprintf('Fetched %d products', $stats['total'])
+            'message' => sprintf('Fetched %d products', $stats['total']),
+            'orphaned' => $orphaned_result
+        );
+    }
+    
+    /**
+     * Handle orphaned products (local products not in remote API)
+     * 
+     * @param array $remote_products Remote product list from API
+     * @return array Result with count of found and processed orphaned products
+     */
+    public function handle_orphaned_products($remote_products) {
+        $action = get_option('planet_sync_orphaned_action', 'keep');
+        
+        // If action is 'keep', skip processing
+        if ($action === 'keep') {
+            return array(
+                'found' => 0,
+                'processed' => 0,
+                'action' => 'keep',
+                'message' => 'No action taken (keep setting)'
+            );
+        }
+        
+        $this->logger->log('system', 'info', '', 'Checking for orphaned products (local but not in remote)');
+        
+        // Build list of remote product slugs
+        $remote_slugs = array();
+        $remote_ids = array();
+        foreach ($remote_products as $product_item) {
+            $slug = $this->extract_slug($product_item);
+            if (!empty($slug)) {
+                $remote_slugs[] = $slug;
+            }
+            if (is_array($product_item) && isset($product_item['id'])) {
+                $remote_ids[] = $product_item['id'];
+            }
+        }
+        
+        // Get all local products that were synced by this plugin
+        global $wpdb;
+        $synced_products = $wpdb->get_results(
+            "SELECT DISTINCT p.ID, p.post_name, pm1.meta_value as planet_slug, pm2.meta_value as planet_id
+            FROM {$wpdb->posts} p
+            INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id AND pm.meta_key = '_planet_product_hash'
+            LEFT JOIN {$wpdb->postmeta} pm1 ON p.ID = pm1.post_id AND pm1.meta_key = '_planet_slug'
+            LEFT JOIN {$wpdb->postmeta} pm2 ON p.ID = pm2.post_id AND pm2.meta_key = '_planet_id'
+            WHERE p.post_type = 'product' 
+            AND p.post_status NOT IN ('trash', 'auto-draft')
+            GROUP BY p.ID"
+        );
+        
+        $orphaned_count = 0;
+        $processed_count = 0;
+        
+        foreach ($synced_products as $local_product) {
+            $is_orphaned = false;
+            
+            // Check if product exists in remote by slug
+            $check_slug = !empty($local_product->planet_slug) ? $local_product->planet_slug : $local_product->post_name;
+            if (!in_array($check_slug, $remote_slugs)) {
+                $is_orphaned = true;
+            }
+            
+            // Double check by Planet ID if available
+            if (!$is_orphaned && !empty($local_product->planet_id)) {
+                if (!in_array($local_product->planet_id, $remote_ids)) {
+                    $is_orphaned = true;
+                }
+            }
+            
+            if ($is_orphaned) {
+                $orphaned_count++;
+                $product_title = get_the_title($local_product->ID);
+                
+                // Perform action based on setting
+                $success = false;
+                switch ($action) {
+                    case 'draft':
+                        $result = wp_update_post(array(
+                            'ID' => $local_product->ID,
+                            'post_status' => 'draft'
+                        ), true);
+                        if (!is_wp_error($result)) {
+                            $success = true;
+                            $this->logger->log('product', 'update', $check_slug, 
+                                sprintf('Set to draft (orphaned): %s', $product_title));
+                        }
+                        break;
+                        
+                    case 'trash':
+                        $result = wp_trash_post($local_product->ID);
+                        if ($result !== false) {
+                            $success = true;
+                            $this->logger->log('product', 'delete', $check_slug, 
+                                sprintf('Moved to trash (orphaned): %s', $product_title));
+                        }
+                        break;
+                        
+                    case 'delete':
+                        $result = wp_delete_post($local_product->ID, true);
+                        if ($result !== false && $result !== null) {
+                            $success = true;
+                            $this->logger->log('product', 'delete', $check_slug, 
+                                sprintf('Permanently deleted (orphaned): %s', $product_title));
+                        }
+                        break;
+                }
+                
+                if ($success) {
+                    $processed_count++;
+                }
+            }
+        }
+        
+        return array(
+            'found' => $orphaned_count,
+            'processed' => $processed_count,
+            'action' => $action,
+            'message' => sprintf('Found %d orphaned products, %d processed', $orphaned_count, $processed_count)
         );
     }
     
@@ -384,7 +511,27 @@ class Planet_Sync_Engine {
             'error' => 'failed'
         );
         $queue_status = isset($status_map[$result]) ? $status_map[$result] : 'failed';
-        $message = ucfirst($result) . ': ' . (isset($full_product['desc']) ? $full_product['desc'] : $slug);
+        
+        // Get product name for message
+        $product_name = isset($full_product['desc']) ? $full_product['desc'] : $slug;
+        
+        // Create descriptive message based on result
+        switch ($result) {
+            case 'skipped':
+                $message = 'Skipped - No change detected: ' . $product_name;
+                break;
+            case 'updated':
+                $message = 'Updated: ' . $product_name;
+                break;
+            case 'created':
+                $message = 'Created: ' . $product_name;
+                break;
+            case 'error':
+                $message = 'Error processing: ' . $product_name;
+                break;
+            default:
+                $message = ucfirst($result) . ': ' . $product_name;
+        }
         
         $this->queue->mark_as_synced($queue_item->id, $queue_status, $message);
         
@@ -410,9 +557,10 @@ class Planet_Sync_Engine {
      * 
      * @param string $slug Product slug
      * @param array $product_data Full product data
+     *
      * @return string Result (created|updated|skipped|error)
      */
-    private function process_single_product($slug, $product_data) {
+	public function process_single_product($slug, $product_data) {
         try {
             // Generate MD5 hash of product data
             $current_hash = md5(json_encode($product_data));
@@ -426,20 +574,30 @@ class Planet_Sync_Engine {
                 
                 // If hash is missing, update and add hash
                 if (empty($stored_hash)) {
-                    $this->update_woo_product($existing_product->get_id(), $product_data, $current_hash);
-                    $this->logger->log('product', 'update', $slug, 'Product updated and hash added');
+                    $change_log = $this->update_woo_product($existing_product->get_id(), $product_data, $current_hash);
+                    $message = 'Product updated and hash added';
+                    if (!empty($change_log)) {
+                        $message .= ' | Changes: ' . $change_log;
+                    }
+                    $this->logger->log('product', 'update', $slug, $message);
                     return 'updated';
                 }
                 
                 // If hash exists and matches, skip update
                 if ($stored_hash === $current_hash) {
-                    $this->logger->log('product', 'skip', $slug, 'No changes detected');
+                    $this->logger->log('product', 'skip', $slug, 'Skipped - No change detected (product data unchanged)');
                     return 'skipped';
                 }
                 
-                // Hash exists but different, update product
-                $this->update_woo_product($existing_product->get_id(), $product_data, $current_hash);
-                $this->logger->log('product', 'update', $slug, 'Product updated');
+                // Hash exists but different, update product and track changes
+                $change_log = $this->update_woo_product($existing_product->get_id(), $product_data, $current_hash);
+                $message = 'Product updated';
+                if (!empty($change_log)) {
+                    $message .= ' | Change log: ' . $change_log;
+                } else {
+                    $message .= ' (hash changed but no specific changes detected)';
+                }
+                $this->logger->log('product', 'update', $slug, $message);
                 return 'updated';
             } else {
                 // Create new product
@@ -511,29 +669,6 @@ class Planet_Sync_Engine {
         $product->set_name($product_data['desc'] ?? 'Untitled Product');  // 'desc' = Product Title
         $product->set_slug($product_data['slug'] ?? '');
         $product->set_description($overview ?? '');  // 'overview' = Product Description
-
-        
-//        // Set price (if provided by API)
-//        if (isset($product_data['price'])) {
-//            $product->set_regular_price($product_data['price']);
-//        }
-//        if (isset($product_data['sale_price'])) {
-//            $product->set_sale_price($product_data['sale_price']);
-//        }
-//
-//        // Set stock (if provided by API)
-//        if (isset($product_data['stock_status'])) {
-//            $product->set_stock_status($product_data['stock_status']);
-//        } else {
-//            $product->set_stock_status('instock');  // Default to in stock
-//        }
-//
-//        if (isset($product_data['manage_stock']) && $product_data['manage_stock']) {
-//            $product->set_manage_stock(true);
-//            if (isset($product_data['stock_quantity'])) {
-//                $product->set_stock_quantity($product_data['stock_quantity']);
-//            }
-//        }
         
         // Save product
         $product_id = $product->save();
@@ -577,42 +712,131 @@ class Planet_Sync_Engine {
     }
     
     /**
+     * Compare old and new product data to detect changes
+     * 
+     * @param WC_Product $product Existing product
+     * @param array $new_product_data New product data from API
+     * @return string Change log message
+     */
+    private function detect_product_changes($product, $new_product_data) {
+        $changes = array();
+        $product_id = $product->get_id();
+        
+        // Compare name
+        $old_name = $product->get_name();
+        $new_name = $new_product_data['desc'] ?? 'Untitled Product';
+        if (trim($old_name) !== trim($new_name)) {
+            $changes[] = 'Name: "' . esc_html($old_name) . '" → "' . esc_html($new_name) . '"';
+        }
+        
+        // Compare description (overview) - check if content changed
+        // Since processed HTML may differ, we check if the raw overview exists and is non-empty
+        $old_description = $product->get_description();
+        $new_overview = $new_product_data['overview'] ?? '';
+        if (!empty($new_overview)) {
+            // Strip HTML tags and compare text content for a more accurate comparison
+            $old_text = wp_strip_all_tags($old_description);
+            $new_text = wp_strip_all_tags($new_overview);
+            if (trim($old_text) !== trim($new_text)) {
+                $changes[] = 'Description updated';
+            }
+        }
+        
+        // Compare product code
+        $old_code = get_post_meta($product_id, 'product_code', true);
+        $new_code = $new_product_data['name'] ?? '';
+        if (trim($old_code) !== trim($new_code) && !empty($new_code)) {
+            $changes[] = 'Product code: "' . esc_html($old_code) . '" → "' . esc_html($new_code) . '"';
+        }
+        
+        // Compare main image - check if image URL filename changed
+        $old_image_id = get_post_thumbnail_id($product_id);
+        $new_image_url = $new_product_data['image'] ?? '';
+        if (!empty($new_image_url)) {
+            $new_image_filename = basename(parse_url($new_image_url, PHP_URL_PATH));
+            if ($old_image_id) {
+                $old_image_path = get_attached_file($old_image_id);
+                $old_image_filename = $old_image_path ? basename($old_image_path) : '';
+                if ($old_image_filename !== $new_image_filename) {
+                    $changes[] = 'Main image updated';
+                }
+            } else {
+                $changes[] = 'Main image added';
+            }
+        } elseif ($old_image_id) {
+            // Old image exists but new data has no image
+            $changes[] = 'Main image removed';
+        }
+        
+        // Compare gallery images count
+        $old_gallery = get_post_meta($product_id, '_product_image_gallery', true);
+        $old_gallery_ids = !empty($old_gallery) ? array_filter(explode(',', $old_gallery)) : array();
+        $new_gallery = $new_product_data['gallery'] ?? array();
+        $new_gallery_count = is_array($new_gallery) ? count($new_gallery) : 0;
+        $old_gallery_count = count($old_gallery_ids);
+        
+        if ($old_gallery_count !== $new_gallery_count) {
+            $changes[] = 'Gallery images: ' . $old_gallery_count . ' → ' . $new_gallery_count . ' images';
+        } elseif ($new_gallery_count > 0) {
+            // Even if count is same, gallery might have changed (we note it as updated)
+            $changes[] = 'Gallery images updated';
+        }
+        
+        // Compare custom fields
+        $custom_fields = array(
+            'applications_tab' => 'applications',
+            'key_features_tab' => 'keyfeatures',
+            'specifications_tab' => 'specifications'
+        );
+        
+        foreach ($custom_fields as $meta_key => $api_key) {
+            $old_value = get_post_meta($product_id, $meta_key, true);
+            $new_value = $new_product_data[$api_key] ?? '';
+            
+            if (!empty($new_value)) {
+                // For HTML content, compare stripped text or hash
+                $old_stripped = wp_strip_all_tags($old_value);
+                $new_stripped = wp_strip_all_tags($new_value);
+                if (empty($old_value) || trim($old_stripped) !== trim($new_stripped)) {
+                    $field_name = ucfirst(str_replace(array('_tab', '_'), array('', ' '), $meta_key));
+                    $changes[] = $field_name . ' updated';
+                }
+            } elseif (!empty($old_value)) {
+                // Field was removed
+                $field_name = ucfirst(str_replace(array('_tab', '_'), array('', ' '), $meta_key));
+                $changes[] = $field_name . ' removed';
+            }
+        }
+        
+        // Note: Categories are synced separately and comparison would require complex logic
+        // We skip category comparison here as it's handled in sync_product_categories
+        
+        return !empty($changes) ? implode(', ', $changes) : '';
+    }
+    
+    /**
      * Update existing WooCommerce product
      * 
      * @param int $product_id Product ID
      * @param array $product_data Product data from API
      * @param string $hash MD5 hash
+     * @return string Change log message
      */
     private function update_woo_product($product_id, $product_data, $hash) {
         $product = wc_get_product($product_id);
         
         if (!$product) {
-            return;
+            return '';
         }
+        
+        // Detect changes before updating
+        $change_log = $this->detect_product_changes($product, $product_data);
         
         $overview = $this->download_and_replace_images_in_html($product_data['overview'], $product_id);
         // Update basic data using Planet API field names
         $product->set_name($product_data['desc'] ?? 'Untitled Product');  // 'desc' = Product Title
         $product->set_description($overview?? '');  // 'overview' = Product Description
-        
-        // Update price (if provided by API)
-//        if (isset($product_data['price'])) {
-//            $product->set_regular_price($product_data['price']);
-//        }
-//        if (isset($product_data['sale_price'])) {
-//            $product->set_sale_price($product_data['sale_price']);
-//        }
-//
-//        // Update stock (if provided by API)
-//        if (isset($product_data['stock_status'])) {
-//            $product->set_stock_status($product_data['stock_status']);
-//        }
-//        if (isset($product_data['manage_stock']) && $product_data['manage_stock']) {
-//            $product->set_manage_stock(true);
-//            if (isset($product_data['stock_quantity'])) {
-//                $product->set_stock_quantity($product_data['stock_quantity']);
-//            }
-//        }
+
         
         // Save product
         $product->save();
@@ -653,6 +877,8 @@ class Planet_Sync_Engine {
 		    $specifications_html = $this->format_specifications_as_table($product_data['specifications']);
 		    update_post_meta($product_id, 'specifications_tab', $specifications_html);
 	    }
+	    
+	    return $change_log;
     }
     
     /**
@@ -871,7 +1097,7 @@ class Planet_Sync_Engine {
      * 
      * @param array $stats Queue statistics
      */
-    private function update_progress($stats) {
+    public function update_progress($stats) {
         $current = $stats['total'] - $stats['pending'];
         $total = $stats['total'];
         $percentage = $total > 0 ? round(($current / $total) * 100) : 0;
@@ -1018,7 +1244,7 @@ class Planet_Sync_Engine {
 
 		$dom = new DOMDocument();
 		libxml_use_internal_errors(true);
-		$dom->loadHTML('<?xml encoding="utf-8" ?>' . $html, LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
+		$dom->loadHTML( $html, LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
 		libxml_clear_errors();
 
 		$imgs = $dom->getElementsByTagName('img');

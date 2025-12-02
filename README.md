@@ -8,6 +8,7 @@ Advanced product synchronization plugin for WooCommerce that syncs products from
 - **MD5 Hash Detection**: Only update products when actual changes are detected
 - **Level 1 Category Support**: Automatically validates and creates level 1 categories
 - **Smart Duplicate Detection**: Checks by slug, SKU, and product code before creating
+- **Orphaned Products Management**: Automatically handle local products not in remote API
 - **Progress Tracking**: Real-time sync progress with visual feedback
 - **Comprehensive Logging**: Detailed activity logs for debugging and monitoring
 - **Modern Admin Interface**: Clean, responsive dashboard with statistics
@@ -20,6 +21,13 @@ Advanced product synchronization plugin for WooCommerce that syncs products from
 2. Activate the plugin through the 'Plugins' menu in WordPress
 3. Navigate to **Products > Planet Sync 2.0** in the admin menu
 4. Configure your API key and settings
+
+## User Guides
+
+- **[Quick Start Guide](QUICK-START.md)** - Get up and running in 5 minutes
+- **[Complete User Guide](USER-GUIDE.md)** - Comprehensive guide with step-by-step instructions
+- **[Real-time Sync](REALTIME-SYNC.md)** - Technical details about sync process
+- **[Category Comparison](CATEGORY-COMPARISON.md)** - Category management guide
 
 ## Requirements
 
@@ -39,6 +47,13 @@ Advanced product synchronization plugin for WooCommerce that syncs products from
 - Retrieves all products from Planet API (`/getProductList`)
 - Stores product list temporarily in WordPress options table
 - Records sync start timestamp
+
+### Step 2.5: Orphaned Products Check
+- Compares local synced products with remote product list
+- Identifies products that exist locally but not in remote API
+- Takes action based on settings (keep, draft, trash, or delete)
+- Only affects products synced by this plugin (with Planet metadata)
+- Logs all actions for audit trail
 
 ### Step 3: Product Processing
 - Loops through each product in the list
@@ -77,7 +92,9 @@ Advanced product synchronization plugin for WooCommerce that syncs products from
 ### Settings
 - API Key configuration
 - Auto-sync enable/disable
-- Sync frequency (hourly/daily)
+- Sync frequency (hourly/daily/weekly)
+- Sync method (AJAX/Background)
+- Orphaned products action (keep/draft/trash/delete)
 - Debug mode toggle
 
 ## API Endpoints Used
@@ -111,6 +128,8 @@ Advanced product synchronization plugin for WooCommerce that syncs products from
 - `planet_sync_frequency` - Sync frequency setting
 - `planet_sync_daily_time` - Preferred start time for daily sync (HH:MM)
 - `planet_sync_debug_mode` - Debug mode enabled/disabled
+- `planet_sync_method` - Sync method (ajax/background)
+- `planet_sync_orphaned_action` - Action for orphaned products (keep/draft/trash/delete)
 - `planet_temp_product_list` - Temporary product list during sync
 - `planet_sync_progress` - Current sync progress
 - `_last_planet_sync` - Last successful sync timestamp
@@ -130,6 +149,29 @@ Advanced product synchronization plugin for WooCommerce that syncs products from
 
 ### Custom Tables
 - `wp_planet_sync_log` - Activity logs and statistics
+
+## Orphaned Products Management
+
+The plugin can automatically manage products that exist locally but are no longer available in the remote Planet API.
+
+### What are Orphaned Products?
+- Products synced by this plugin (have Planet metadata)
+- Exist in your local WooCommerce store
+- No longer exist in the remote Planet API
+
+### Available Actions
+- **Keep (Do Nothing)** - Default safe option, products remain unchanged
+- **Set to Draft** - Changes status to draft, hiding from store
+- **Move to Trash** - Moves to WordPress trash (can be restored)
+- **Permanently Delete** - Immediately deletes products (⚠️ cannot be undone)
+
+### Important Notes
+- Only affects products synced by this plugin
+- Manual WooCommerce products are never touched
+- All actions are logged for audit trail
+- Setting can be changed at any time
+
+For detailed information, see [ORPHANED-PRODUCTS.md](ORPHANED-PRODUCTS.md)
 
 ## Usage
 
@@ -209,10 +251,18 @@ For issues, feature requests, or contributions, please contact:
 
 - Author: H M Shahadul Islam
 - Company: Codereyes
-- Version: 2.0.0
+- Version: 2.0.1
 - License: GPL v2 or later
 
 ## Changelog
+
+### Version 2.0.1
+- Added orphaned products management feature
+- New setting to handle local products not in remote API
+- Options: keep, set to draft, trash, or permanently delete
+- Dashboard section for monitoring orphaned products
+- Comprehensive logging of all orphaned product actions
+- Only affects products synced by the plugin (safe for manual products)
 
 ### Version 2.0.0
 - Complete rewrite with 3-step workflow

@@ -39,6 +39,13 @@ class Planet_Sync_Admin {
         add_action('wp_ajax_planet_clear_logs', array($this, 'ajax_clear_logs'));
         add_action('wp_ajax_planet_test_connection', array($this, 'ajax_test_connection'));
         add_action('wp_ajax_planet_retry_failed', array($this, 'ajax_retry_failed'));
+        add_action('wp_ajax_planet_start_background_sync', array($this, 'ajax_start_background_sync'));
+        add_action('wp_ajax_planet_get_background_status', array($this, 'ajax_get_background_status'));
+        add_action('wp_ajax_planet_pause_background_sync', array($this, 'ajax_pause_background_sync'));
+        add_action('wp_ajax_planet_resume_background_sync', array($this, 'ajax_resume_background_sync'));
+        add_action('wp_ajax_planet_cancel_background_sync', array($this, 'ajax_cancel_background_sync'));
+        add_action('wp_ajax_planet_trigger_background_sync', array($this, 'ajax_trigger_background_sync'));
+        add_action('wp_ajax_planet_get_background_debug', array($this, 'ajax_get_background_debug'));
     }
     
     /**
@@ -64,6 +71,8 @@ class Planet_Sync_Admin {
         register_setting('planet_sync_settings', 'planet_sync_frequency');
         register_setting('planet_sync_settings', 'planet_sync_daily_time');
         register_setting('planet_sync_settings', 'planet_sync_debug_mode');
+        register_setting('planet_sync_settings', 'planet_sync_method'); // 'ajax' or 'background'
+        register_setting('planet_sync_settings', 'planet_sync_orphaned_action'); // Action for orphaned products
     }
     
     /**
@@ -92,6 +101,7 @@ class Planet_Sync_Admin {
         wp_localize_script('planet-sync-admin', 'planetSync', array(
             'ajaxUrl' => admin_url('admin-ajax.php'),
             'nonce' => wp_create_nonce('planet_sync_nonce'),
+            'syncMethod' => get_option('planet_sync_method', 'ajax'),
             'strings' => array(
                 'syncing' => __('Syncing...', 'planet-product-sync'),
                 'success' => __('Sync completed successfully', 'planet-product-sync'),
@@ -118,6 +128,25 @@ class Planet_Sync_Admin {
 
         $stats = $this->logger->get_sync_stats();
         $progress = $this->sync_engine->get_sync_progress();
+        $auto_sync_info = $this->get_next_auto_sync_info();
+        switch ($auto_sync_info['frequency']) {
+            case 'daily':
+                $frequency_label = sprintf(
+                    esc_html__('Daily at %s', 'planet-product-sync'),
+                    esc_html($auto_sync_info['daily_time'])
+                );
+                break;
+            case 'twice_daily':
+                $frequency_label = esc_html__('Twice daily (every 12 hours)', 'planet-product-sync');
+                break;
+            case 'weekly':
+                $frequency_label = esc_html__('Weekly', 'planet-product-sync');
+                break;
+            case 'hourly':
+            default:
+                $frequency_label = esc_html__('Hourly', 'planet-product-sync');
+                break;
+        }
         
         ?>
         <div class="wrap planet-sync-admin">
@@ -149,9 +178,63 @@ class Planet_Sync_Admin {
                             <div class="stat-label"><?php _e('Errors', 'planet-product-sync'); ?></div>
                             <div class="stat-value stat-error"><?php echo esc_html($stats['errors']); ?></div>
                         </div>
+                        <div class="stat-box">
+                            <div class="stat-label"><?php _e('Auto Sync', 'planet-product-sync'); ?></div>
+                            <div class="stat-value <?php echo $auto_sync_info['enabled'] ? 'stat-success' : 'stat-error'; ?>">
+                                <?php echo $auto_sync_info['enabled']
+                                    ? esc_html__('Enabled', 'planet-product-sync')
+                                    : esc_html__('Disabled', 'planet-product-sync'); ?>
+                            </div>
+                            <div class="stat-note">
+                                <?php
+                                $method_label = ($auto_sync_info['sync_method'] === 'background')
+                                    ? esc_html__('Background', 'planet-product-sync')
+                                    : esc_html__('AJAX', 'planet-product-sync');
+                                if ($auto_sync_info['enabled']) {
+                                    if (!empty($auto_sync_info['next_timestamp'])) {
+                                        $next_formatted = wp_date(
+                                            get_option('date_format') . ' ' . get_option('time_format'),
+                                            $auto_sync_info['next_timestamp']
+                                        );
+                                        printf(
+                                            '<strong>%s</strong><br><span>%s • %s</span>',
+                                            esc_html(sprintf(__('Next: %s', 'planet-product-sync'), $next_formatted)),
+                                            esc_html(sprintf(__('Method: %s', 'planet-product-sync'), $method_label)),
+                                            esc_html($frequency_label)
+                                        );
+                                    } else {
+                                        printf(
+                                            '<span>%s</span><br><span>%s • %s</span>',
+                                            esc_html__('Next run not scheduled yet.', 'planet-product-sync'),
+                                            esc_html(sprintf(__('Method: %s', 'planet-product-sync'), $method_label)),
+                                            esc_html($frequency_label)
+                                        );
+                                    }
+                                } else {
+                                    esc_html_e('Auto sync is disabled.', 'planet-product-sync');
+                                }
+                                ?>
+                            </div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label"><?php _e('Sync Frequency', 'planet-product-sync'); ?></div>
+                            <div class="stat-value stat-info"><?php echo esc_html($frequency_label); ?></div>
+                            <?php if ($auto_sync_info['frequency'] === 'daily'): ?>
+                                <div class="stat-note">
+                                    <?php printf(
+                                        esc_html__('Daily run time: %s', 'planet-product-sync'),
+                                        esc_html($auto_sync_info['daily_time'])
+                                    ); ?>
+                                </div>
+                            <?php endif; ?>
+                        </div>
                     </div>
                     
                     <div class="planet-actions">
+                        <?php 
+                        $sync_method = get_option('planet_sync_method', 'ajax');
+                        $bg_status = planet_sync_get_background_status();
+                        ?>
                         <button type="button" id="start-sync-btn" class="button button-primary button-large">
                             <?php _e('Start Full Sync', 'planet-product-sync'); ?>
                         </button>
@@ -164,6 +247,64 @@ class Planet_Sync_Admin {
                         <button type="button" id="clear-logs-btn" class="button button-secondary">
                             <?php _e('Clear Logs', 'planet-product-sync'); ?>
                         </button>
+                        
+                        <?php if ($sync_method === 'background'): ?>
+                        <div class="background-sync-controls">
+                            <strong><?php _e('Background Sync Controls:', 'planet-product-sync'); ?></strong>
+                            <?php if ($bg_status['is_running']): ?>
+                                <?php if ($bg_status['is_paused']): ?>
+                                    <button type="button" id="resume-background-sync-btn" class="button button-primary">
+                                        <?php _e('Resume Sync', 'planet-product-sync'); ?>
+                                    </button>
+                                <?php else: ?>
+                                    <button type="button" id="pause-background-sync-btn" class="button button-secondary">
+                                        <?php _e('Pause Sync', 'planet-product-sync'); ?>
+                                    </button>
+                                <?php endif; ?>
+                                <button type="button" id="cancel-background-sync-btn" class="button button-secondary">
+                                    <?php _e('Cancel Sync', 'planet-product-sync'); ?>
+                                </button>
+                            <?php elseif ($bg_status['is_queued'] && !$bg_status['is_processing']): ?>
+                                <button type="button" id="trigger-background-sync-btn" class="button button-primary">
+                                    <?php _e('Manually Trigger Processing', 'planet-product-sync'); ?>
+                                </button>
+                                <p class="description" style="margin-top: 5px;">
+                                    <?php _e('Queue has items but processing hasn\'t started. Click to manually trigger.', 'planet-product-sync'); ?>
+                                </p>
+                            <?php endif; ?>
+                            
+                            <!-- Always visible manual trigger button -->
+                            <span class="manual-trigger-wrapper">
+                                <button type="button" id="trigger-background-sync-btn-always" class="button button-secondary">
+                                    <?php _e('Manual Trigger', 'planet-product-sync'); ?>
+                                </button>
+                                <span class="planet-tooltip-wrapper">
+                                    <span class="dashicons dashicons-info" 
+                                          title="<?php esc_attr_e('Manually trigger background sync processing (useful if queue is stuck or not processing automatically).', 'planet-product-sync'); ?>"></span>
+                                    <span class="planet-tooltip">
+                                        <?php _e('Manually trigger background sync processing (useful if queue is stuck or not processing automatically).', 'planet-product-sync'); ?>
+                                    </span>
+                                </span>
+                            </span>
+                            
+                            <button type="button" id="get-background-debug-btn" class="button button-secondary" style="margin-left: 10px;">
+                                <?php _e('Debug Info', 'planet-product-sync'); ?>
+                            </button>
+                            <span class="background-sync-status" style="margin-left: 10px; color: #666;">
+                                <?php 
+                                if ($bg_status['is_processing']) {
+                                    _e('Processing...', 'planet-product-sync');
+                                } elseif ($bg_status['is_queued']) {
+                                    _e('Queued', 'planet-product-sync');
+                                } elseif ($bg_status['is_paused']) {
+                                    _e('Paused', 'planet-product-sync');
+                                } else {
+                                    _e('Idle', 'planet-product-sync');
+                                }
+                                ?>
+                            </span>
+                        </div>
+                        <?php endif; ?>
                     </div>
                 </div>
                 
@@ -206,6 +347,13 @@ class Planet_Sync_Admin {
                 <div class="planet-sync-card">
                     <h2><?php _e('New Products', 'planet-product-sync'); ?></h2>
                     <?php $this->render_new_products_table(); ?>
+                </div>
+                
+                <!-- Orphaned Products Section -->
+                <div class="planet-sync-card">
+                    <h2><?php _e('Orphaned Products', 'planet-product-sync'); ?></h2>
+                    <p><?php _e('Products that exist locally but not in the remote Planet API. Action taken based on your settings.', 'planet-product-sync'); ?></p>
+                    <?php $this->render_orphaned_products_info(); ?>
                 </div>
                 
                 <!-- Settings Section -->
@@ -251,11 +399,23 @@ class Planet_Sync_Admin {
                                 </th>
                                 <td>
                                     <select id="planet_sync_frequency" name="planet_sync_frequency">
+                                        <option value="1min" <?php selected(get_option('planet_sync_frequency'), '1min'); ?>>
+                                            <?php _e('Every 1 Minute (testing only, may be heavy)', 'planet-product-sync'); ?>
+                                        </option>
+                                        <option value="5min" <?php selected(get_option('planet_sync_frequency'), '5min'); ?>>
+                                            <?php _e('Every 5 Minutes', 'planet-product-sync'); ?>
+                                        </option>
                                         <option value="hourly" <?php selected(get_option('planet_sync_frequency'), 'hourly'); ?>>
                                             <?php _e('Hourly', 'planet-product-sync'); ?>
                                         </option>
+                                        <option value="twice_daily" <?php selected(get_option('planet_sync_frequency'), 'twice_daily'); ?>>
+                                            <?php _e('Twice Daily', 'planet-product-sync'); ?>
+                                        </option>
                                         <option value="daily" <?php selected(get_option('planet_sync_frequency'), 'daily'); ?>>
                                             <?php _e('Daily', 'planet-product-sync'); ?>
+                                        </option>
+                                        <option value="weekly" <?php selected(get_option('planet_sync_frequency'), 'weekly'); ?>>
+                                            <?php _e('Weekly', 'planet-product-sync'); ?>
                                         </option>
                                     </select>
                                 </td>
@@ -289,6 +449,50 @@ class Planet_Sync_Admin {
                                                <?php checked(get_option('planet_sync_debug_mode'), 'yes'); ?>>
                                         <?php _e('Enable debug logging', 'planet-product-sync'); ?>
                                     </label>
+                                </td>
+                            </tr>
+                            
+                            <tr>
+                                <th scope="row">
+                                    <label for="planet_sync_method"><?php _e('Sync Method', 'planet-product-sync'); ?></label>
+                                </th>
+                                <td>
+                                    <select id="planet_sync_method" name="planet_sync_method">
+                                        <option value="ajax" <?php selected(get_option('planet_sync_method', 'ajax'), 'ajax'); ?>>
+                                            <?php _e('AJAX (Real-time with browser open)', 'planet-product-sync'); ?>
+                                        </option>
+                                        <option value="background" <?php selected(get_option('planet_sync_method', 'ajax'), 'background'); ?>>
+                                            <?php _e('Background (Runs without browser)', 'planet-product-sync'); ?>
+                                        </option>
+                                    </select>
+                                    <p class="description">
+                                        <?php _e('AJAX: Real-time updates, requires browser to stay open. Background: Runs via WP-Cron, no browser needed. Background method is recommended for scheduled/automated syncs.', 'planet-product-sync'); ?>
+                                    </p>
+                                </td>
+                            </tr>
+                            
+                            <tr>
+                                <th scope="row">
+                                    <label for="planet_sync_orphaned_action"><?php _e('Orphaned Products Action', 'planet-product-sync'); ?></label>
+                                </th>
+                                <td>
+                                    <select id="planet_sync_orphaned_action" name="planet_sync_orphaned_action">
+                                        <option value="keep" <?php selected(get_option('planet_sync_orphaned_action', 'keep'), 'keep'); ?>>
+                                            <?php _e('Keep (Do Nothing)', 'planet-product-sync'); ?>
+                                        </option>
+                                        <option value="draft" <?php selected(get_option('planet_sync_orphaned_action', 'keep'), 'draft'); ?>>
+                                            <?php _e('Set to Draft', 'planet-product-sync'); ?>
+                                        </option>
+                                        <option value="trash" <?php selected(get_option('planet_sync_orphaned_action', 'keep'), 'trash'); ?>>
+                                            <?php _e('Move to Trash', 'planet-product-sync'); ?>
+                                        </option>
+                                        <option value="delete" <?php selected(get_option('planet_sync_orphaned_action', 'keep'), 'delete'); ?>>
+                                            <?php _e('Permanently Delete', 'planet-product-sync'); ?>
+                                        </option>
+                                    </select>
+                                    <p class="description">
+                                        <?php _e('What to do with local products that exist in WooCommerce but not in the remote Planet API. "Keep" means no action will be taken. Note: Only products synced by this plugin (with Planet metadata) will be affected.', 'planet-product-sync'); ?>
+                                    </p>
                                 </td>
                             </tr>
                         </table>
@@ -404,6 +608,61 @@ class Planet_Sync_Admin {
     }
     
     /**
+     * Render orphaned products information
+     */
+    private function render_orphaned_products_info() {
+        $orphaned_action = get_option('planet_sync_orphaned_action', 'keep');
+        $orphaned_logs = $this->logger->get_recent_logs(100, 'product', 'delete');
+        
+        // Filter for orphaned products (those with "orphaned" in message)
+        $orphaned_products = array_filter($orphaned_logs, function($log) {
+            return stripos($log->message, 'orphaned') !== false;
+        });
+        
+        $action_labels = array(
+            'keep' => __('Keep (No Action)', 'planet-product-sync'),
+            'draft' => __('Set to Draft', 'planet-product-sync'),
+            'trash' => __('Move to Trash', 'planet-product-sync'),
+            'delete' => __('Permanently Delete', 'planet-product-sync')
+        );
+        
+        ?>
+        <div style="margin-bottom: 15px; padding: 10px; background: #f0f0f1; border-left: 4px solid #2271b1;">
+            <strong><?php _e('Current Action:', 'planet-product-sync'); ?></strong> 
+            <?php echo esc_html($action_labels[$orphaned_action] ?? $orphaned_action); ?>
+            <br>
+            <small><?php _e('You can change this in the Settings section below.', 'planet-product-sync'); ?></small>
+        </div>
+        
+        <?php if (empty($orphaned_products)): ?>
+            <p><?php _e('No orphaned products found in recent syncs.', 'planet-product-sync'); ?></p>
+        <?php else: ?>
+        <div class="planet-logs-table">
+            <table class="wp-list-table widefat fixed striped">
+                <thead>
+                    <tr>
+                        <th><?php _e('Product Identifier', 'planet-product-sync'); ?></th>
+                        <th><?php _e('Action', 'planet-product-sync'); ?></th>
+                        <th><?php _e('Message', 'planet-product-sync'); ?></th>
+                        <th><?php _e('Time', 'planet-product-sync'); ?></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($orphaned_products as $log): ?>
+                    <tr>
+                        <td><?php echo esc_html($log->slug_or_id); ?></td>
+                        <td><span class="log-badge log-action-<?php echo esc_attr($log->action); ?>"><?php echo esc_html($log->action); ?></span></td>
+                        <td><?php echo esc_html($log->message); ?></td>
+                        <td><?php echo esc_html($log->created_at); ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <?php endif;
+    }
+    
+    /**
      * Resolve product ID from slug, SKU, or stored Planet metadata
      *
      * @param string $identifier
@@ -474,6 +733,14 @@ class Planet_Sync_Admin {
         }
         
         update_option('planet_sync_debug_mode', isset($_POST['planet_sync_debug_mode']) ? 'yes' : 'no');
+        
+        if (isset($_POST['planet_sync_method'])) {
+            update_option('planet_sync_method', sanitize_text_field($_POST['planet_sync_method']));
+        }
+        
+        if (isset($_POST['planet_sync_orphaned_action'])) {
+            update_option('planet_sync_orphaned_action', sanitize_text_field($_POST['planet_sync_orphaned_action']));
+        }
 
         if (function_exists('planet_sync_setup_cron')) {
             planet_sync_setup_cron(true);
@@ -803,6 +1070,201 @@ class Planet_Sync_Admin {
                 'message' => 'No failed products found to retry'
             ));
         }
+    }
+    
+    /**
+     * AJAX: Start background sync
+     */
+    public function ajax_start_background_sync() {
+        check_ajax_referer('planet_sync_nonce', 'nonce');
+        
+        if (!current_user_can('manage_woocommerce')) {
+            wp_send_json_error(array('message' => 'Unauthorized'));
+        }
+        
+        $result = planet_sync_start_background();
+        
+        if ($result['success']) {
+            wp_send_json_success($result);
+        } else {
+            wp_send_json_error($result);
+        }
+    }
+    
+    /**
+     * AJAX: Get background sync status
+     */
+    public function ajax_get_background_status() {
+        check_ajax_referer('planet_sync_nonce', 'nonce');
+        
+        if (!current_user_can('manage_woocommerce')) {
+            wp_send_json_error(array('message' => 'Unauthorized'));
+        }
+        
+        $status = planet_sync_get_background_status();
+        $progress = $this->sync_engine->get_sync_progress();
+        
+        wp_send_json_success(array(
+            'status' => $status,
+            'progress' => $progress
+        ));
+    }
+    
+    /**
+     * AJAX: Pause background sync
+     */
+    public function ajax_pause_background_sync() {
+        check_ajax_referer('planet_sync_nonce', 'nonce');
+        
+        if (!current_user_can('manage_woocommerce')) {
+            wp_send_json_error(array('message' => 'Unauthorized'));
+        }
+        
+        if (!class_exists('Planet_Background_Sync')) {
+            wp_send_json_error(array('message' => 'Background sync not available'));
+        }
+        
+        $background_sync = new Planet_Background_Sync();
+        $background_sync->pause();
+        
+        wp_send_json_success(array('message' => 'Background sync paused'));
+    }
+    
+    /**
+     * AJAX: Resume background sync
+     */
+    public function ajax_resume_background_sync() {
+        check_ajax_referer('planet_sync_nonce', 'nonce');
+        
+        if (!current_user_can('manage_woocommerce')) {
+            wp_send_json_error(array('message' => 'Unauthorized'));
+        }
+        
+        if (!class_exists('Planet_Background_Sync')) {
+            wp_send_json_error(array('message' => 'Background sync not available'));
+        }
+        
+        $background_sync = new Planet_Background_Sync();
+        $background_sync->resume();
+        
+        wp_send_json_success(array('message' => 'Background sync resumed'));
+    }
+    
+    /**
+     * AJAX: Cancel background sync
+     */
+    public function ajax_cancel_background_sync() {
+        check_ajax_referer('planet_sync_nonce', 'nonce');
+        
+        if (!current_user_can('manage_woocommerce')) {
+            wp_send_json_error(array('message' => 'Unauthorized'));
+        }
+        
+        if (!class_exists('Planet_Background_Sync')) {
+            wp_send_json_error(array('message' => 'Background sync not available'));
+        }
+        
+        $background_sync = new Planet_Background_Sync();
+        $background_sync->cancel();
+        
+        // Cleanup
+        delete_transient('planet_sync_in_progress');
+        delete_option('planet_sync_progress');
+        delete_transient('planet_sync_progress_cache');
+        
+        wp_send_json_success(array('message' => 'Background sync cancelled'));
+    }
+    
+    /**
+     * AJAX: Manually trigger background sync processing
+     */
+    public function ajax_trigger_background_sync() {
+        check_ajax_referer('planet_sync_nonce', 'nonce');
+        
+        if (!current_user_can('manage_woocommerce')) {
+            wp_send_json_error(array('message' => 'Unauthorized'));
+        }
+        
+        if (!class_exists('Planet_Background_Sync')) {
+            wp_send_json_error(array('message' => 'Background sync not available'));
+        }
+        
+        $background_sync = new Planet_Background_Sync();
+        
+        // Try to trigger processing
+        $triggered = $background_sync->trigger_processing();
+        
+        if ($triggered) {
+            wp_send_json_success(array('message' => 'Background sync processing triggered successfully'));
+        } else {
+            $status = $background_sync->get_status();
+            $message = 'Failed to trigger processing. ';
+            if ($status['is_processing']) {
+                $message .= 'Process is already running.';
+            } elseif (!$status['is_queued']) {
+                $message .= 'Queue is empty.';
+            } else {
+                $message .= 'Unknown error.';
+            }
+            wp_send_json_error(array('message' => $message, 'status' => $status));
+        }
+    }
+    
+    /**
+     * AJAX: Get background sync debug information
+     */
+    public function ajax_get_background_debug() {
+        check_ajax_referer('planet_sync_nonce', 'nonce');
+        
+        if (!current_user_can('manage_woocommerce')) {
+            wp_send_json_error(array('message' => 'Unauthorized'));
+        }
+        
+        if (!class_exists('Planet_Background_Sync')) {
+            wp_send_json_error(array('message' => 'Background sync not available'));
+        }
+        
+        $background_sync = new Planet_Background_Sync();
+        $debug_info = $background_sync->get_debug_info();
+        $status = $background_sync->get_status();
+        
+        wp_send_json_success(array(
+            'debug' => $debug_info,
+            'status' => $status,
+            'wc_loaded' => class_exists('WC_Background_Process'),
+            'cron_disabled' => defined('DISABLE_WP_CRON') && DISABLE_WP_CRON
+        ));
+    }
+
+    /**
+     * Get information about the next scheduled auto sync
+     *
+     * @return array
+     */
+    private function get_next_auto_sync_info() {
+        $enabled      = get_option('planet_sync_auto_sync', 'no') === 'yes';
+        $frequency    = get_option('planet_sync_frequency', 'hourly');
+        $daily_time   = get_option('planet_sync_daily_time', '02:00');
+        $sync_method  = get_option('planet_sync_method', 'ajax');
+        $next_run     = false;
+
+        if ($enabled) {
+            if (function_exists('planet_sync_is_action_scheduler_ready') && planet_sync_is_action_scheduler_ready()) {
+                $next_run = as_next_scheduled_action('planet_auto_sync');
+            }
+
+            if (!$next_run) {
+                $next_run = wp_next_scheduled('planet_auto_sync');
+            }
+        }
+
+        return array(
+            'enabled' => $enabled,
+            'frequency' => $frequency,
+            'daily_time' => $daily_time,
+            'sync_method' => $sync_method,
+            'next_timestamp' => $next_run,
+        );
     }
 }
 

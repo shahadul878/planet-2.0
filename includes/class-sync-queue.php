@@ -68,6 +68,16 @@ class Planet_Sync_Queue {
     }
     
     /**
+     * Add products to queue (alias for initialize_queue for backward compatibility)
+     * 
+     * @param array $product_list List of products to sync
+     * @return array Result with batch_id and total count
+     */
+    public function add_products_to_queue($product_list) {
+        return $this->initialize_queue($product_list);
+    }
+    
+    /**
      * Initialize sync queue from product list
      * 
      * @param array $product_list List of products to sync
